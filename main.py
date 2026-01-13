@@ -255,6 +255,20 @@ def admin_revoke(payload: AdminKeyRequest = Body(...), admin: bool = Depends(req
     db.close()
     return {"status": "ok", "message": "licença revogada"}
 
+@app.post("/admin/unrevoke")
+def admin_unrevoke(payload: AdminKeyRequest = Body(...), admin: bool = Depends(require_admin)):
+    key = payload.key
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("UPDATE licenses SET active = 1 WHERE key = ?", (key,))
+    if cur.rowcount == 0:
+        db.close()
+        raise HTTPException(status_code=404, detail="Key não encontrada")
+    db.commit()
+    db.close()
+    return {"status": "ok", "message": "licença reativada"}
+
+
 @app.post("/admin/reset-device")
 def admin_reset_device(payload: AdminKeyRequest = Body(...), admin: bool = Depends(require_admin)):
     key = payload.key
