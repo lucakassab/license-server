@@ -4,9 +4,12 @@ import sqlite3
 from datetime import date, datetime, timedelta
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Header, Depends, Query, Body
+from fastapi import FastAPI, HTTPException, Header, Depends, Query, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, validator
+
+import secrets
 
 # ---------------------------
 # Config
@@ -109,7 +112,6 @@ def require_admin(x_admin_token: Optional[str] = Header(None)):
 # ---------------------------
 # Util
 # ---------------------------
-import secrets
 def generate_key():
     chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     parts = []
@@ -325,9 +327,9 @@ def admin_info(admin: bool = Depends(require_admin)):
 # Error handlers (friendly)
 # ---------------------------
 @app.exception_handler(HTTPException)
-def custom_http_exception_handler(request, exc):
-    # mantém default behavior, mas poderia logar em arquivo externo
-    return fastapi.responses.JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+def custom_http_exception_handler(request: Request, exc: HTTPException):
+    # mantém comportamento consistente e retorna JSON amigável
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 # ---------------------------
 # Requirements note (for your reference)
