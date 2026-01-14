@@ -21,7 +21,7 @@ ALLOW_ORIGINS = os.getenv("ALLOW_ORIGINS", "*")  # ex: "https://meusite.com" ou 
 # ---------------------------
 # App
 # ---------------------------
-app = FastAPI(title="License Server", version="1.1")
+app = FastAPI(title="License Server", version="1.2")
 
 # CORS - dev friendly; em produção restringe ALLOW_ORIGINS adequadamente
 origins = [o.strip() for o in ALLOW_ORIGINS.split(",")] if ALLOW_ORIGINS != "*" else ["*"]
@@ -124,7 +124,7 @@ def generate_key():
 # ---------------------------
 @app.get("/")
 def root():
-    return {"status": "ok", "version": "1.1"}
+    return {"status": "ok", "version": "1.2"}
 
 @app.post("/create")
 def create_license(req: CreateLicenseRequest, allowed: bool = Depends(require_admin)):
@@ -281,6 +281,44 @@ def admin_reset_device(payload: AdminKeyRequest = Body(...), admin: bool = Depen
     db.commit()
     db.close()
     return {"status": "ok", "message": "bound_device_id removido"}
+
+# ---- Novo: reset-license (revoga -> limpa device -> reativa) ----
+@app.post("/admin/reset-license")
+def admin_reset_license(payload: AdminKeyRequest = Body(...), admin: bool = Depends(require_admin)):
+    key = payload.key
+    db = get_db()
+    cur = db.cursor()
+    # busca estado atual pra retornar info útil
+    cur.execute("SELECT active, bound_device_id FROM licenses WHERE key = ?", (key,))
+    row = cur.fetchone()
+    if not row:
+        db.close()
+        raise HTTPException(status_code=404, detail="Key não encontrada")
+
+    prev_active = row["active"]
+    prev_bound = row["bound_device_id"]
+
+    try:
+        # revoga
+        cur.execute("UPDATE licenses SET active = 0 WHERE key = ?", (key,))
+        # limpa bind
+        cur.execute("UPDATE licenses SET bound_device_id = NULL WHERE key = ?", (key,))
+        # reativa
+        cur.execute("UPDATE licenses SET active = 1 WHERE key = ?", (key,))
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        db.close()
+        raise HTTPException(status_code=500, detail=f"erro ao resetar license: {e}")
+
+    db.close()
+    return {
+        "status": "ok",
+        "message": "license reset: revoke -> cleared bound_device_id -> unrevoke",
+        "previous_active": prev_active,
+        "previous_bound_device_id": prev_bound
+    }
+# ---- fim novo ----
 
 @app.post("/admin/delete")
 def admin_delete(payload: AdminKeyRequest = Body(...), admin: bool = Depends(require_admin)):
