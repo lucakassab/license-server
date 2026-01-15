@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Admin Login</title>
+  <style>
+    body{font-family:Arial,Helvetica,sans-serif;background:#071022;color:#e6eef8;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
+    .card{background:#0f1720;padding:20px;border-radius:10px;width:340px;box-shadow:0 6px 20px rgba(0,0,0,.6)}
+    input{width:100%;padding:10px;margin:8px 0;border-radius:8px;border:1px solid #263445;background:#06121a;color:#e6eef8}
+    button{width:100%;padding:10px;border-radius:8px;border:none;background:#2563eb;color:white;cursor:pointer}
+    .muted{font-size:13px;color:#9fb0d7;margin-top:8px}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Login Admin</h2>
+    <input id="user" placeholder="username" value="admin"/>
+    <input id="pass" placeholder="password" type="password" value="senha12345"/>
+    <button id="btn">Entrar</button>
+    <div class="muted">Usa as credenciais definidas nas env vars ADMIN_USER / ADMIN_PASSWORD.</div>
+    <pre id="out" style="margin-top:8px;background:#06121a;padding:8px;border-radius:6px;display:none"></pre>
+  </div>
+
+<script>
+document.getElementById('btn').addEventListener('click', async ()=>{
+  const u = document.getElementById('user').value.trim()
+  const p = document.getElementById('pass').value
+  document.getElementById('out').style.display='block'
+  document.getElementById('out').textContent = 'Logando...'
+  try{
+    const res = await fetch('/api/login', {
+      method:'POST',
+      credentials:'include',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({username:u,password:p})
+    })
+    if(!res.ok) throw await res.json()
+    document.getElementById('out').textContent = 'Ok. Indo pra dashboard...'
+    setTimeout(()=> location.href = '/admin', 600)
+  }catch(e){
+    document.getElementById('out').textContent = typeof e === 'string' ? e : JSON.stringify(e)
+  }
+})
+</script>
+</body>
+</html>

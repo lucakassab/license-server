@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>License Admin Dashboard</title>
+  <style>
+    :root{--bg:#0b1220;--card:#0f1720;--muted:#9fb0d7;--accent:#60a5fa;--ok:#10b981;--err:#ef4444}
+    body{font-family:Inter,Arial,Helvetica,sans-serif;background:linear-gradient(180deg,#071029 0%,#081427 100%);color:#e6eef8;margin:0;padding:18px}
+    h1{font-size:20px;margin:0 0 12px}
+    .row{display:flex;gap:12px}
+    .card{background:var(--card);padding:12px;border-radius:10px;box-shadow:0 6px 18px rgba(2,6,23,.6);margin-bottom:12px}
+    input,select,textarea,button{padding:8px;border-radius:8px;border:1px solid #233240;background:#08121a;color:#e6eef8}
+    label{font-size:13px;color:var(--muted)} button{cursor:pointer}
+    table{width:100%;border-collapse:collapse} th,td{padding:8px;text-align:left;border-bottom:1px dashed #16232e;font-size:13px}
+    th{color:var(--muted);font-weight:600}.small{font-size:12px;color:var(--muted)}
+    .actions button{margin-right:6px}.flex{display:flex;gap:8px;align-items:center}.right{margin-left:auto}.muted{color:var(--muted)}
+  </style>
+</head>
+<body>
+  <h1>License Admin Dashboard</h1>
+
+  <div class="card">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+      <div class="flex" style="flex:1">
+        <label>Usuário:</label>
+        <span id="who" style="margin-left:8px;color:#9fb0d7"></span>
+        <button id="btnLogout" style="margin-left:12px">Logout</button>
+      </div>
+      <div class="right">
+        <button id="btnReload">Recarregar</button>
+      </div>
+    </div>
+
+    <div class="card" id="createCard">
+      <h3 style="margin:0 0 8px">Criar nova license</h3>
+      <div class="row">
+        <div style="flex:1">
+          <label>Client</label>
+          <input id="createClient" placeholder="Nome do cliente" />
+        </div>
+        <div style="width:180px">
+          <label>Expiração</label>
+          <input id="createExpiration" type="date" />
+        </div>
+        <div style="width:140px">
+          <label>Single machine</label>
+          <select id="createSingle"><option value="1">Sim</option><option value="0">Não</option></select>
+        </div>
+        <div style="width:120px;display:flex;flex-direction:column;justify-content:flex-end">
+          <button id="btnCreate">Criar</button>
+        </div>
+      </div>
+      <div style="margin-top:8px"><span class="small muted">Se deixar key vazia, o server gera automaticamente.</span></div>
+    </div>
+
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <div class="flex" style="flex:1">
+        <label>Pesquisar cliente</label>
+        <input id="qClient" placeholder="buscar..." style="margin-left:8px" />
+        <label style="margin-left:8px">Ativas</label>
+        <select id="qActive" style="width:100px;margin-left:6px"><option value="">Todas</option><option value="1">Sim</option><option value="0">Não</option></select>
+        <button id="btnFilter" style="margin-left:8px">Filtrar</button>
+      </div>
+    </div>
+
+    <div id="tableWrap">
+      <table id="licensesTable">
+        <thead>
+          <tr><th>Key</th><th>Client</th><th>Expiração</th><th>Single</th><th>Active</th><th>Bound Device</th><th>Criado</th><th>Ações</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div style="margin-top:8px;display:flex;align-items:center;gap:8px">
+      <button id="btnPrev">&lt; Prev</button>
+      <button id="btnNext">Next &gt;</button>
+      <div class="small muted" id="pageInfo">page 1</div>
+      <div class="right small muted">Total: <span id="totalCount">0</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin:0 0 8px">Console</h3>
+    <pre id="console">nenhuma ação ainda</pre>
+  </div>
+
+<script>
+function $id(s){return document.getElementById(s)}
+function setConsole(t){ $id('console').textContent = typeof t === 'string' ? t : JSON.stringify(t,null,2) }
+
+let state = { page:1, per_page:50, total:0 }
+
+async function apiFetch(path, opts={}) {
+  try {
+    const merged = Object.assign({ credentials: 'include', headers: {} }, opts)
+    if(merged.body && !merged.headers['Content-Type']) merged.headers['Content-Type']='application/json'
+    const res = await fetch(path, merged)
+    const txt = await res.text()
+    let data = null
+    try{ data = txt ? JSON.parse(txt) : null }catch(e){ data = txt }
+    if(!res.ok) throw { status: res.status, body: data }
+    return data
+  } catch(e){ throw e }
+}
+
+// whoami
+async function whoami(){
+  try{
+    const me = await apiFetch('/admin/me')
+    $id('who').textContent = me.username || 'admin'
+  }catch(e){
+    $id('who').textContent = 'desconhecido'
+  }
+}
+
+// create
+$id('btnCreate').addEventListener('click', async ()=>{
+  const client = $id('createClient').value.trim() || undefined
+  const exp = $id('createExpiration').value || undefined
+  const single = $id('createSingle').value === '1'
+  const payload = { client, expiration: exp, single_machine: single, active: true }
+  setConsole('criando...')
+  try{
+    const data = await apiFetch('/create', { method:'POST', body: JSON.stringify(payload) })
+    setConsole(data)
+    await loadList()
+  }catch(err){ setConsole(err) }
+})
+
+// list
+async function loadList(){
+  const q = $id('qClient').value.trim() || undefined
+  const only_active = $id('qActive').value === '' ? undefined : parseInt($id('qActive').value)
+  const url = `/admin/list?page=${state.page}&per_page=${state.per_page}` + (q?`&q_client=${encodeURIComponent(q)}`:'') + (only_active!==undefined?`&only_active=${only_active}`:'')
+  setConsole('carregando lista...')
+  try{
+    const data = await apiFetch(url)
+    state.total = data.count
+    $id('totalCount').textContent = data.count
+    $id('pageInfo').textContent = `page ${data.page}`
+    renderTable(data.licenses)
+    setConsole('lista carregada')
+  }catch(err){ setConsole(err) }
+}
+
+function renderTable(rows){
+  const tb = $id('licensesTable').querySelector('tbody')
+  tb.innerHTML = ''
+  rows.forEach(r=>{
+    const tr = document.createElement('tr')
+    tr.innerHTML = `
+      <td><code>${r.key}</code></td>
+      <td>${r.client||''}</td>
+      <td>${r.expiration||''}</td>
+      <td>${r.single_machine? 'Sim':'Não'}</td>
+      <td>${r.active? 'Sim':'Não'}</td>
+      <td>${r.bound_device_id||''}</td>
+      <td>${r.created_at||''}</td>
+      <td class="actions">
+        <button data-action="reset-license" data-key="${r.key}">Reset</button>
+        <button data-action="reset-device" data-key="${r.key}">Reset Device</button>
+        <button data-action="revoke" data-key="${r.key}">Revoke</button>
+        <button data-action="unrevoke" data-key="${r.key}">Unrevoke</button>
+        <button data-action="delete" data-key="${r.key}">Delete</button>
+      </td>
+    `
+    tb.appendChild(tr)
+  })
+}
+
+$id('licensesTable').addEventListener('click', async (e)=>{
+  const btn = e.target.closest('button')
+  if(!btn) return
+  const action = btn.dataset.action
+  const key = btn.dataset.key
+  if(!action||!key) return
+  if(!confirm(`Confirma ${action} para ${key}?`)) return
+  try{
+    setConsole(`${action} → ${key}`)
+    let path = '/admin/' + (action === 'reset-license' ? 'reset-license' : action === 'reset-device' ? 'reset-device' : action)
+    const res = await apiFetch(path, { method:'POST', body: JSON.stringify({key}) })
+    setConsole(res)
+    await loadList()
+  }catch(err){ setConsole(err) }
+})
+
+$id('btnReload').addEventListener('click', ()=>{ state.page = 1; loadList() })
+$id('btnFilter').addEventListener('click', ()=>{ state.page = 1; loadList() })
+$id('btnPrev').addEventListener('click', ()=>{ if(state.page>1){ state.page--; loadList() } })
+$id('btnNext').addEventListener('click', ()=>{ state.page++; loadList() })
+$id('btnLogout').addEventListener('click', async ()=>{
+  try{
+    await apiFetch('/api/logout', { method:'POST' })
+  }catch(e){}
+  location.href = '/login'
+})
+
+// init
+whoami(); loadList();
+</script>
+</body>
+</html>
