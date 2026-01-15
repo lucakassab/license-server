@@ -5,12 +5,13 @@ import base64
 import hmac
 import hashlib
 import time
+import json
 from datetime import date, datetime, timedelta
-from typing import Optional
+from typing import Optional, List, Dict
 
-from fastapi import FastAPI, HTTPException, Header, Depends, Query, Body, Request, Response, Cookie
+from fastapi import FastAPI, HTTPException, Header, Depends, Query, Body, Request, Response, Cookie, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse, RedirectResponse
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, validator
 
@@ -20,18 +21,18 @@ import secrets
 # Config (defina as env vars no Render)
 # ---------------------------
 DB_PATH = os.getenv("DB_PATH", "licenses.db")
-ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "CHANGE_THIS_TOKEN")      # usado por scripts: X-Admin-Token
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "CHANGE_THIS_TOKEN")
 ADMIN_USER = os.getenv("ADMIN_USER", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "senha12345")
-SECRET_KEY = os.getenv("SECRET_KEY", "troca_essa_senha_agora")   # usado para assinar cookie
+SECRET_KEY = os.getenv("SECRET_KEY", "troca_essa_senha_agora")
 SESSION_COOKIE_NAME = os.getenv("SESSION_COOKIE_NAME", "admin_session")
-SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", str(60*60*8)))  # 8h por padrão
+SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", str(60*60*8)))
 ALLOW_ORIGINS = os.getenv("ALLOW_ORIGINS", "*")
 
 # ---------------------------
 # App
 # ---------------------------
-app = FastAPI(title="License Server with Admin UI", version="1.3")
+app = FastAPI(title="License Server with Admin UI", version="1.4")
 
 origins = [o.strip() for o in ALLOW_ORIGINS.split(",")] if ALLOW_ORIGINS != "*" else ["*"]
 app.add_middleware(
@@ -42,7 +43,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# serve static files (coloca os html em ./static)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # ---------------------------
@@ -125,7 +125,7 @@ def make_session_token(username: str, ttl: int = SESSION_TTL_SECONDS) -> str:
     expiry = int(time.time()) + int(ttl)
     payload = f"{username}:{expiry}".encode()
     sig = _sign_message(payload)
-    token = base64.urlsafe_b64encode(b"%b:%b" % (payload, sig.encode())).decode()
+    token = base64.urlsafe_b64encode(payload + b":" + sig.encode()).decode()
     return token
 
 def verify_session_token(token: Optional[str]) -> Optional[str]:
@@ -136,7 +136,6 @@ def verify_session_token(token: Optional[str]) -> Optional[str]:
         parts = raw.split(b":")
         if len(parts) < 3:
             return None
-        # reconstruct username:expiry (could contain colons in username but we don't use colons in username here)
         username = parts[0].decode()
         expiry = int(parts[1].decode())
         sig = parts[2].decode()
@@ -153,13 +152,9 @@ def verify_session_token(token: Optional[str]) -> Optional[str]:
 # ---------------------------
 # Admin dependency — aceita cookie de sessão ou X-Admin-Token
 # ---------------------------
-from fastapi import Cookie as _Cookie  # alias só pra anotar
-
 def require_admin(x_admin_token: Optional[str] = Header(None), admin_session: Optional[str] = Cookie(None)):
-    # 1) header token (scripts)
     if ADMIN_TOKEN and x_admin_token and x_admin_token == ADMIN_TOKEN:
         return True
-    # 2) cookie session
     user = verify_session_token(admin_session)
     if user and user == ADMIN_USER:
         return True
@@ -180,7 +175,7 @@ def generate_key():
 # ---------------------------
 @app.get("/")
 def root():
-    return {"status": "ok", "version": "1.3"}
+    return {"status": "ok", "version": "1.4"}
 
 @app.post("/create")
 def create_license(req: CreateLicenseRequest, allowed: bool = Depends(require_admin)):
@@ -407,6 +402,89 @@ def admin_info(admin: bool = Depends(require_admin)):
     return {"total_licenses": total, "active_licenses": active, "env": {"db_path": DB_PATH, "admin_token_set": ADMIN_TOKEN != "CHANGE_THIS_TOKEN"}}
 
 # ---------------------------
+# EXPORT / IMPORT endpoints
+# ---------------------------
+@app.get("/admin/export")
+def admin_export(admin: bool = Depends(require_admin)):
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("SELECT key, active, expiration, single_machine, bound_device_id, client, created_at FROM licenses ORDER BY created_at ASC")
+    rows = [row_to_dict(r) for r in cur.fetchall()]
+    db.close()
+    payload = {
+        "exported_at": datetime.utcnow().isoformat() + "Z",
+        "count": len(rows),
+        "licenses": rows
+    }
+    return JSONResponse(content=payload)
+
+@app.post("/admin/import")
+def admin_import(payload: Dict = Body(...), mode: str = Query("merge"), admin: bool = Depends(require_admin)):
+    """
+    Import JSON payload with structure:
+    {
+      "licenses": [ { key, active, expiration, single_machine, bound_device_id, client, created_at }, ... ]
+    }
+    mode:
+      - merge: skip existing keys
+      - replace: delete all then insert
+      - upsert: insert or replace
+    """
+    if "licenses" not in payload or not isinstance(payload["licenses"], list):
+        raise HTTPException(status_code=400, detail="payload inválido: precisa conter 'licenses' lista")
+    items = payload["licenses"]
+    db = get_db()
+    cur = db.cursor()
+    try:
+        if mode == "replace":
+            cur.execute("DELETE FROM licenses")
+        for lic in items:
+            key = lic.get("key")
+            if not key:
+                continue
+            active = 1 if lic.get("active", 1) else 0
+            expiration = lic.get("expiration", None)
+            single = 1 if lic.get("single_machine", 1) else 0
+            bound = lic.get("bound_device_id", None)
+            client = lic.get("client", None)
+            created_at = lic.get("created_at", datetime.utcnow().isoformat())
+            if mode == "merge":
+                cur.execute("SELECT 1 FROM licenses WHERE key = ?", (key,))
+                if cur.fetchone():
+                    continue
+                cur.execute("INSERT INTO licenses (key, active, expiration, single_machine, bound_device_id, client, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                            (key, active, expiration, single, bound, client, created_at))
+            elif mode == "upsert":
+                cur.execute("INSERT OR REPLACE INTO licenses (key, active, expiration, single_machine, bound_device_id, client, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                            (key, active, expiration, single, bound, client, created_at))
+            else:  # replace or default insert
+                cur.execute("INSERT INTO licenses (key, active, expiration, single_machine, bound_device_id, client, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                            (key, active, expiration, single, bound, client, created_at))
+        db.commit()
+    except sqlite3.IntegrityError as e:
+        db.rollback()
+        db.close()
+        raise HTTPException(status_code=400, detail=f"integrity error: {e}")
+    except Exception as e:
+        db.rollback()
+        db.close()
+        raise HTTPException(status_code=500, detail=str(e))
+    db.close()
+    return {"status": "ok", "imported": len(items), "mode": mode}
+
+@app.post("/admin/import-file")
+async def admin_import_file(file: UploadFile = File(...), mode: str = Query("merge"), admin: bool = Depends(require_admin)):
+    """
+    Accepts a JSON file upload (same structure as /admin/export) and imports it.
+    """
+    try:
+        content = await file.read()
+        payload = json.loads(content.decode())
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"erro ao ler arquivo: {e}")
+    return admin_import(payload=payload, mode=mode, admin=admin)
+
+# ---------------------------
 # Login, logout, serve admin UI
 # ---------------------------
 @app.post("/api/login")
@@ -414,7 +492,6 @@ def api_login(req: LoginRequest, response: Response):
     if req.username != ADMIN_USER or req.password != ADMIN_PASSWORD:
         raise HTTPException(status_code=401, detail="credenciais inválidas")
     token = make_session_token(req.username)
-    # cookie HttpOnly, Secure; SameSite=lax para permitir navigation
     response.set_cookie(SESSION_COOKIE_NAME, token, httponly=True, secure=True, samesite="lax", max_age=SESSION_TTL_SECONDS)
     return {"status":"ok"}
 
@@ -425,7 +502,6 @@ def api_logout(response: Response):
 
 @app.get("/admin")
 def serve_admin_page(admin: bool = Depends(require_admin)):
-    # Servir o dashboard já protegido
     return FileResponse("static/license_admin_dashboard.html")
 
 @app.get("/login")

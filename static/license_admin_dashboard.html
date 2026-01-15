@@ -27,8 +27,12 @@
         <span id="who" style="margin-left:8px;color:#9fb0d7"></span>
         <button id="btnLogout" style="margin-left:12px">Logout</button>
       </div>
-      <div class="right">
+      <div style="display:flex;gap:8px;align-items:center">
         <button id="btnReload">Recarregar</button>
+        <button id="btnExport">Export JSON</button>
+        <input id="importFile" type="file" accept="application/json" />
+        <select id="importMode"><option value="merge">merge</option><option value="upsert">upsert</option><option value="replace">replace</option></select>
+        <button id="btnImport">Importar</button>
       </div>
     </div>
 
@@ -125,6 +129,44 @@ $id('btnCreate').addEventListener('click', async ()=>{
   try{
     const data = await apiFetch('/create', { method:'POST', body: JSON.stringify(payload) })
     setConsole(data)
+    await loadList()
+  }catch(err){ setConsole(err) }
+})
+
+// Export
+$id('btnExport').addEventListener('click', async ()=>{
+  setConsole('exportando...')
+  try{
+    const data = await apiFetch('/admin/export')
+    const blob = new Blob([JSON.stringify(data,null,2)], {type: 'application/json'})
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `licenses-export-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.json`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+    setConsole({status:'export ok', count: data.count})
+  }catch(err){ setConsole(err) }
+})
+
+// Import (file upload)
+$id('btnImport').addEventListener('click', async ()=>{
+  const fileInput = $id('importFile')
+  if(!fileInput.files || fileInput.files.length === 0){
+    return setConsole('seleciona um arquivo JSON primeiro')
+  }
+  const file = fileInput.files[0]
+  const mode = $id('importMode').value
+  setConsole('importando arquivo...')
+  try{
+    const fd = new FormData()
+    fd.append('file', file)
+    const res = await fetch(`/admin/import-file?mode=${encodeURIComponent(mode)}`, { method:'POST', credentials:'include', body: fd })
+    const json = await res.json()
+    if(!res.ok) throw json
+    setConsole(json)
     await loadList()
   }catch(err){ setConsole(err) }
 })
